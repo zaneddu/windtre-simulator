@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulatore WindTre PRO - Ottobre 2025</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .slide-in { animation: slideIn 0.3s ease-out; }
+        @keyframes slideIn { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-orange-50 to-orange-100 min-h-screen p-4">
+    <input type="file" id="file-upload" accept=".json" style="display: none;">
+    
+    <div id="app" class="max-w-7xl mx-auto"></div>
+
+    <script>
+        // Configurazione PDV
+        const pdvConfig = {
+            cc: { 
+                name: 'Centro Commerciale', 
+                cluster: 2, 
+                mobileSoglie: [80, 120, 185, 225], 
+                fissoSoglie: [36, 62, 86, 100] 
+            },
+            strada: { 
+                name: 'Strada', 
+                cluster: 1,
+                mobileSoglie: [70, 105, 135, 165],
+                fissoSoglie: [28, 46, 67, 80] 
+            }
+        };
+
+        // State
+        let state = {
+            vendite: JSON.parse(localStorage.getItem('windtre_vendite') || '[]'),
+            showForm: false,
+            giorniLavorativiCC: parseInt(localStorage.getItem('windtre_giorni_cc') || '31'),
+            giorniLavorativiStrada: parseInt(localStorage.getItem('windtre_giorni_strada') || '26'),
+            giorniTrascorsiCC: parseInt(localStorage.getItem('windtre_trascorsi_cc') || '7'),
+            giorniTrascorsiStrada: parseInt(localStorage.getItem('windtre_trascorsi_strada') || '6'),
+            formData: {
+                pdv: 'cc',
+                tipo: 'mobile',
+                canone: '9.99',
+                tipoGA: 'tied',
+                mnp: false,
+                operatoreMNP: '',
+                telefonoIncluso: false,
+                tipoTelefono: 'smartphone',
+                fasciaPrezzo: '200-600',
+                convergenza: 'nessuna',
+                piuSicuri: 'no',
+                underground: false,
+                tipoFisso: 'consumer',
+                convergenzaFisso: false,
+                ftth: false,
+                netflix: 'no',
+                fritzbox: false,
+                lineaAttiva: false,
+                reloadExchange: false,
+                tipoLuceGas: 'consumer',
+                sdd: false
+            }
+        };
+
+        // Salva stato
+        function saveState() {
+            localStorage.setItem('windtre_vendite', JSON.stringify(state.vendite));
+            localStorage.setItem('windtre_giorni_cc', state.giorniLavorativiCC);
+            localStorage.setItem('windtre_giorni_strada', state.giorniLavorativiStrada);
+            localStorage.setItem('windtre_trascorsi_cc', state.giorniTrascorsiCC);
+            localStorage.setItem('windtre_trascorsi_strada', state.giorniTrascorsiStrada);
+        }
+
+        // Calcoli
+        function calcolaSogliaMobile(pdv, punti) {
+            const soglie = pdvConfig[pdv].mobileSoglie;
+            if (punti >= soglie[3]) return 4;
+            if (punti >= soglie[2]) return 3;
+            if (punti >= soglie[1]) return 2;
+            if (punti >= soglie[0]) return 1;
+            return 0;
+        }
+
+        function calcolaSogliaFisso(pdv, punti) {
+            const soglie = pdvConfig[pdv].fissoSoglie;
+            if (punti >= soglie[3]) return 4;
+            if (punti >= soglie[2]) return 3;
+            if (punti >= soglie[1]) return 2;
+            if (punti >= soglie[0]) return 1;
+            return 0;
+        }
+
+        function calcolaPuntiSogliaMobile(v) {
+            let punti = v.underground ? 0.5 : 1.0;
+            if (v.mnp) punti += 1.0;
+            if (v.tipoGA === 'tied') punti += 2.0;
+            if (v.tipoGA === 'piva') punti += 1.0;
+            if (v.mnp && ['iliad', 'fastweb', 'coop', 'poste', 'tiscali'].includes(v.operatoreMNP)) {
+                punti += 1.0;
+            }
+            const mult = (v.piuSicuri !== 'no') ? 1.0 : 0.75;
+            punti *= mult;
+            if (v.telefonoIncluso && v.tipoGA === 'tied') punti += 1.25;
+            if (v.reloadExchange) punti += 0.5;
+            return punti;
+        }
+
+        function calcolaPuntiSogliaFisso(v) {
+            let punti = (v.piva) ? 1.5 : 1.0;
+            if (v.fritzbox) punti += 1.0;
+            if (v.netflix !== 'no') punti += 0.5;
+            return punti;
+        }
+
+        function calcolaCommissioneMobile(v, soglia) {
+            const canone = parseFloat(v.canone) || 0;
+            let comm = v.tipoGA === 'untied' ? 1 : 5;
+            
+            const moltBase = [0, 1.0, 1.5, 2.0, 2.25][soglia] || 0;
+            let moltTotale = moltBase;
+            
+            if (v.mnp) moltTotale += 1.0;
+            if (v.tipoGA === 'tied') moltTotale += (soglia >= 3 ? 2.25 : 2.0);
+            if (v.tipoGA === 'piva') moltTotale += 1.0;
+            
+            comm += canone * moltTotale;
+            
+            if (v.telefonoIncluso && v.tipoTelefono === 'smartphone') {
+                if (v.fasciaPrezzo === '<200') comm += 20;
+                else if (v.fasciaPrezzo === '200-600') comm += 25;
+                else if (v.fasciaPrezzo === '>600') comm += 40;
+            } else if (v.telefonoIncluso && v.tipoTelefono === 'other') {
+                comm += 15;
+            }
+            
+            if (v.convergenza === 'superfibra' || v.convergenza === 'luceegas') comm += 15;
+            if (v.piuSicuri === 'pro') comm += 5;
+            else if (v.piuSicuri === 'base') comm += 0.5;
+            if (v.reloadExchange) comm += 5;
+            
+            return comm;
+        }
+
+        function calcolaCommissioneFisso(v, soglia) {
+            const moltBase = [0, 2.0, 3.0, 4.0, 5.0][soglia] || 0;
+            let comm = 22;
+            if (v.tipoFisso === 'voce-casa') comm = 17;
+            else if (v.tipoFisso === '2-linea') comm = 10;
+            
+            let moltTotale = moltBase;
+            if (v.convergenzaFisso) moltTotale += 2.0;
+            if (v.ftth) moltTotale += 1.0;
+            
+            comm += 22 * moltTotale;
+            
+            if (v.netflix === 'no-adv') comm += 10;
+            else if (v.netflix === 'adv') comm += 5;
+            if (v.fritzbox) comm += 40;
+            
+            return comm;
+        }
+
+        function calcolaCommissioneLuceGas(v) {
+            if (v.tipoLuceGas === 'consumer') return v.sdd ? 75 : 60;
+            return v.sdd ? 115 : 100;
+        }
+
+        function calcolaStatistiche() {
+            const stats = {
+                cc: { 
+                    mobile: { punti: 0, soglia: 0, fatturato: 0, count: 0, piva: 0, tied: 0, telefoni: 0 }, 
+                    fisso: { punti: 0, soglia: 0, fatturato: 0, count: 0 },
+                    luceegas: { fatturato: 0, count: 0 }
+                },
+                strada: { 
+                    mobile: { punti: 0, soglia: 0, fatturato: 0, count: 0, piva: 0, tied: 0, telefoni: 0 }, 
+                    fisso: { punti: 0, soglia: 0, fatturato: 0, count: 0 },
+                    luceegas: { fatturato: 0, count: 0 }
+                },
+                totale: { 
+                    fatturato: 0, 
+                    pivaCount: 0,
+                    mobileCount: 0,
+                    fissoCount: 0,
+                    tiedCount: 0,
+                    telefoniCount: 0,
+                    lucegasCount: 0
+                }
+            };
+            
+            state.vendite.forEach(v => {
+                if (v.tipo === 'mobile') {
+                    stats[v.pdv].mobile.punti += calcolaPuntiSogliaMobile(v);
+                    stats[v.pdv].mobile.count++;
+                    stats.totale.mobileCount++;
+                    if (v.tipoGA === 'piva') { stats[v.pdv].mobile.piva++; stats.totale.pivaCount++; }
+                    if (v.tipoGA === 'tied') { stats[v.pdv].mobile.tied++; stats.totale.tiedCount++; }
+                    if (v.telefonoIncluso) { stats[v.pdv].mobile.telefoni++; stats.totale.telefoniCount++; }
+                } else if (v.tipo === 'fisso') {
+                    stats[v.pdv].fisso.punti += calcolaPuntiSogliaFisso(v);
+                    stats[v.pdv].fisso.count++;
+                    stats.totale.fissoCount++;
+                } else if (v.tipo === 'luceegas') {
+                    stats[v.pdv].luceegas.count++;
+                    stats.totale.lucegasCount++;
+                }
+            });
+            
+            stats.cc.mobile.soglia = calcolaSogliaMobile('cc', stats.cc.mobile.punti);
+            stats.strada.mobile.soglia = calcolaSogliaMobile('strada', stats.strada.mobile.punti);
+            stats.cc.fisso.soglia = calcolaSogliaFisso('cc', stats.cc.fisso.punti);
+            stats.strada.fisso.soglia = calcolaSogliaFisso('strada', stats.strada.fisso.punti);
+            
+            state.vendite.forEach(v => {
+                let comm = 0;
+                if (v.tipo === 'mobile') {
+                    comm = calcolaCommissioneMobile(v, stats[v.pdv].mobile.soglia);
+                    stats[v.pdv].mobile.fatturato += comm;
+                } else if (v.tipo === 'fisso') {
+                    comm = calcolaCommissioneFisso(v, stats[v.pdv].fisso.soglia);
+                    stats[v.pdv].fisso.fatturato += comm;
+                } else if (v.tipo === 'luceegas') {
+                    comm = calcolaCommissioneLuceGas(v);
+                    stats[v.pdv].luceegas.fatturato += comm;
+                }
+                stats.totale.fatturato += comm;
+            });
+            
+            const fissoTotale = stats.cc.fisso.punti + stats.strada.fisso.punti;
+            const sogliaFissoMin = Math.max(calcolaSogliaFisso('cc', fissoTotale), calcolaSogliaFisso('strada', fissoTotale));
+            
+            if (sogliaFissoMin < 1 || stats.totale.pivaCount < 8) {
+                const perdita = (stats.cc.mobile.fatturato + stats.strada.mobile.fatturato) * 0.3;
+                stats.totale.fatturato -= perdita;
+                stats.decurtazione = perdita;
+            }
+            
+            stats.fissoTotalePunti = fissoTotale;
+            stats.sogliaFissoMinima = sogliaFissoMin;
+            
+            if (stats.totale.mobileCount > 0) {
+                stats.percTied = (stats.totale.tiedCount / stats.totale.mobileCount * 100).toFixed(1);
+                stats.percPiva = (stats.totale.pivaCount / stats.totale.mobileCount * 100).toFixed(1);
+                stats.percTelefoni = (stats.totale.telefoniCount / stats.totale.mobileCount * 100).toFixed(1);
+            }
+            
+            return stats;
+        }
+
+        function calcolaProiezioni(stats) {
+            if (state.giorniTrascorsiCC === 0 && state.giorniTrascorsiStrada === 0) return null;
+            
+            const pCC = state.giorniTrascorsiCC > 0 ? {
+                mobile: Math.round(stats.cc.mobile.count * (state.giorniLavorativiCC / state.giorniTrascorsiCC)),
+                fisso: Math.round(stats.cc.fisso.count * (state.giorniLavorativiCC / state.giorniTrascorsiCC)),
+                fatturato: (stats.cc.mobile.fatturato + stats.cc.fisso.fatturato) * (state.giorniLavorativiCC / state.giorniTrascorsiCC)
+            } : { mobile: 0, fisso: 0, fatturato: 0 };
+            
+            const pStrada = state.giorniTrascorsiStrada > 0 ? {
+                mobile: Math.round(stats.strada.mobile.count * (state.giorniLavorativiStrada / state.giorniTrascorsiStrada)),
+                fisso: Math.round(stats.strada.fisso.count * (state.giorniLavorativiStrada / state.giorniTrascorsiStrada)),
+                fatturato: (stats.strada.mobile.fatturato + stats.strada.fisso.fatturato) * (state.giorniLavorativiStrada / state.giorniTrascorsiStrada)
+            } : { mobile: 0, fisso: 0, fatturato: 0 };
+            
+            return {
+                cc: pCC,
+                strada: pStrada,
+                totale: {
+                    mobile: pCC.mobile + pStrada.mobile,
+                    fisso: pCC.fisso + pStrada.fisso,
+                    fatturato: pCC.fatturato + pStrada.fatturato
+                }
+            };
+        }
+
+        // Actions
+        function aggiungiVendita() {
+            state.vendite.push({ ...state.formData, id: Date.now() });
+            state.formData.canone = '9.99';
+            state.showForm = false;
+            saveState();
+            render();
+        }
+
+        function rimuoviVendita(id) {
+            state.vendite = state.vendite.filter(v => v.id !== id);
+            saveState();
+            render();
+        }
+
+        function esportaDati() {
+            const data = {
+                versione: '1.0',
+                data_export: new Date().toISOString(),
+                vendite: state.vendite,
+                configurazione: {
+                    giorniLavorativiCC: state.giorniLavorativiCC,
+                    giorniLavorativiStrada: state.giorniLavorativiStrada,
+                    giorniTrascorsiCC: state.giorniTrascorsiCC,
+                    giorniTrascorsiStrada: state.giorniTrascorsiStrada
+                }
+            };
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `windtre_backup_${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function importaDati(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                try {
+                    const data = JSON.parse(ev.target.result);
+                    if (!data.vendite || !data.configurazione) {
+                        alert('File non valido!');
+                        return;
+                    }
+                    state.vendite = data.vendite;
+                    state.giorniLavorativiCC = data.configurazione.giorniLavorativiCC;
+                    state.giorniLavorativiStrada = data.configurazione.giorniLavorativiStrada;
+                    state.giorniTrascorsiCC = data.configurazione.giorniTrascorsiCC;
+                    state.giorniTrascorsiStrada = data.configurazione.giorniTrascorsiStrada;
+                    saveState();
+                    render();
+                    alert(`Backup caricato! ${data.vendite.length} vendite`);
+                } catch (err) {
+                    alert('Errore caricamento file');
+                }
+            };
+            reader.readAsText(file);
+            e.target.value = '';
+        }
+
+        function cancellaAlleDati() {
+            if (confirm('Cancellare tutti i dati?')) {
+                state.vendite = [];
+                state.giorniTrascorsiCC = 7;
+                state.giorniTrascorsiStrada = 6;
+                localStorage.clear();
+                saveState();
+                render();
+            }
+        }
+
+        // Render
+        function render() {
+            const stats = calcolaStatistiche();
+            const proiezioni = calcolaProiezioni(stats);
+            
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                <!-- Header -->
+                <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+                    <div class="flex items-center justify-between flex-wrap gap-4">
+                        <div>
+                            <h1 class="text-3xl font-bold text-orange-600">📊 Simulatore WindTre PRO</h1>
+                            <p class="text-gray-600 mt-1">Ottobre 2025 - Calcolo DRMS mensile</p>
+                            <div class="flex items-center gap-2 mt-2">
+                                <span class="text-xs text-green-600 font-semibold">💾 Salvataggio automatico attivo</span>
+                            </div>
+                        </div>
+                        <div class="flex flex-col gap-2">
+                            <div class="flex gap-2">
+                                <button onclick="esportaDati()" class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition text-sm font-semibold">
+                                    ⬇️ Scarica Backup
+                                </button>
+                                <button onclick="document.getElementById('file-upload').click()" class="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 transition text-sm font-semibold">
+                                    ⬆️ Carica Backup
+                                </button>
+                            </div>
+                            <button onclick="cancellaAlleDati()" class="text-xs text-red-600 hover:text-red-800">
+                                🔄 Cancella tutti i dati
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="border-t mt-4 pt-4">
+                        <div class="flex gap-3 flex-wrap items-end">
+                            <div class="flex flex-col">
+                                <label class="text-xs text-gray-600 mb-1">GG CC (tot/fatti)</label>
+                                <div class="flex gap-1">
+                                    <input type="number" value="${state.giorniLavorativiCC}" onchange="state.giorniLavorativiCC = parseInt(this.value) || 31; saveState(); render();" class="border rounded px-2 py-2 w-16 text-center font-semibold text-sm">
+                                    <input type="number" value="${state.giorniTrascorsiCC}" onchange="state.giorniTrascorsiCC = parseInt(this.value) || 0; saveState(); render();" class="border rounded px-2 py-2 w-16 text-center font-semibold text-sm">
+                                </div>
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="text-xs text-gray-600 mb-1">GG Strada (tot/fatti)</label>
+                                <div class="flex gap-1">
+                                    <input type="number" value="${state.giorniLavorativiStrada}" onchange="state.giorniLavorativiStrada = parseInt(this.value) || 26; saveState(); render();" class="border rounded px-2 py-2 w-16 text-center font-semibold text-sm">
+                                    <input type="number" value="${state.giorniTrascorsiStrada}" onchange="state.giorniTrascorsiStrada = parseInt(this.value) || 0; saveState(); render();" class="border rounded px-2 py-2 w-16 text-center font-semibold text-sm">
+                                </div>
+                            </div>
+                            <button onclick="state.showForm = !state.showForm; render();" class="bg-orange-500 text-white px-6 py-2 rounded-lg hover:bg-orange-600 transition font-semibold">
+                                ${state.showForm ? '❌ Chiudi Form' : '➕ Nuova Vendita'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                ${!state.showForm ? `
+                    <!-- Dashboard Cards -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                        <div class="bg-white rounded-lg shadow p-4">
+                            <p class="text-gray-600 text-sm">DRMS Attuale</p>
+                            <p class="text-2xl font-bold text-green-600">€${stats.totale.fatturato.toFixed(0)}</p>
+                            ${proiezioni ? `<p class="text-xs text-blue-600 mt-1">Proiez: €${proiezioni.totale.fatturato.toFixed(0)}</p>` : ''}
+                        </div>
+                        <div class="bg-white rounded-lg shadow p-4">
+                            <p class="text-gray-600 text-sm">Attivazioni M+F</p>
+                            <p class="text-2xl font-bold text-orange-600">${stats.totale.mobileCount + stats.totale.fissoCount}</p>
+                            ${proiezioni ? `<p class="text-xs text-blue-600 mt-1">Proiez: ${proiezioni.totale.mobile + proiezioni.totale.fisso}</p>` : ''}
+                        </div>
+                        <div class="bg-white rounded-lg shadow p-4">
+                            <p class="text-gray-600 text-sm mb-2">Mix Prodotti</p>
+                            <div class="text-xs space-y-1">
+                                <div class="flex justify-between"><span>Tied:</span><span class="font-semibold">${stats.percTied || '0'}%</span></div>
+                                <div class="flex justify-between"><span>P.IVA:</span><span class="font-semibold">${stats.percPiva || '0'}%</span></div>
+                            </div>
+                        </div>
+                        <div class="bg-white rounded-lg shadow p-4">
+                            <p class="text-gray-600 text-sm mb-2">KPI Ratio</p>
+                            <div class="text-xs space-y-1">
+                                <div class="flex justify-between"><span>P.IVA:</span><span class="font-semibold ${stats.totale.pivaCount >= 8 ? 'text-green-600' : 'text-red-600'}">${stats.totale.pivaCount}/8</span></div>
+                                <div class="flex justify-between"><span>Fisso:</span><span class="font-semibold ${stats.sogliaFissoMinima >= 1 ? 'text-green-600' : 'text-red-600'}">${stats.fissoTotalePunti.toFixed(1)}/64</span></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    ${(stats.sogliaFissoMinima < 1 || stats.totale.pivaCount < 8) ? `
+                        <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded">
+                            <h3 class="font-bold text-red-800 mb-2">⚠️ RISCHIO DECURTAZIONE 30%</h3>
+                            <ul class="text-red-700 text-sm">
+                                ${stats.sogliaFissoMinima < 1 ? `<li>• Fisso: mancano ${(64 - stats.fissoTotalePunti).toFixed(1)} pt</li>` : ''}
+                                ${stats.totale.pivaCount < 8 ? `<li>• P.IVA: mancano ${8 - stats.totale.pivaCount}</li>` : ''}
+                            </ul>
+                            ${stats.decurtazione ? `<p class="text-red-900 font-bold mt-2">Perdita: -€${stats.decurtazione.toFixed(0)}</p>` : ''}
+                        </div>
+                    ` : ''}
+                ` : renderForm()}
+
+                <!-- Lista Vendite -->
+                <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+                    <h2 class="text-xl font-bold mb-4">Vendite (${state.vendite.length})</h2>
+                    ${state.vendite.length === 0 ? '<p class="text-gray-500 text-center py-8">Nessuna vendita</p>' : `
+                        <div class="space-y-2 max-h-96 overflow-y-auto">
+                            ${state.vendite.map((v, i) => renderVendita(v, i, stats)).join('')}
+                        </div>
+                    `}
+                </div>
+
+                <!-- Soglie PDV -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    ${renderPDV('cc', stats)}
+                    ${renderPDV('strada', stats)}
+                </div>
+            `;
+        }
+
+        function renderForm() {
+            return `
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6 fade-in">
+                    <div class="bg-white rounded-lg shadow-lg p-6 border-4 border-orange-500 max-h-[800px] overflow-y-auto">
+                        <div class="flex justify-between items-center mb-4 sticky top-0 bg-white pb-3 border-b">
+                            <h2 class="text-xl font-bold">📝 Inserisci Vendita</h2>
+                            <button onclick="state.showForm = false; render();" class="text-2xl font-bold text-gray-500 hover:text-gray-700">×</button>
+                        </div>
+                        
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium mb-1">PDV</label>
+                                <select onchange="state.formData.pdv = this.value; render();" class="w-full border rounded px-3 py-2">
+                                    <option value="cc" ${state.formData.pdv === 'cc' ? 'selected' : ''}>Centro Commerciale</option>
+                                    <option value="strada" ${state.formData.pdv === 'strada' ? 'selected' : ''}>Strada</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-1">Tipo</label>
+                                <select onchange="state.formData.tipo = this.value; render();" class="w-full border rounded px-3 py-2">
+                                    <option value="mobile" ${state.formData.tipo === 'mobile' ? 'selected' : ''}>Mobile</option>
+                                    <option value="fisso" ${state.formData.tipo === 'fisso' ? 'selected' : ''}>Fisso</option>
+                                    <option value="luceegas" ${state.formData.tipo === 'luceegas' ? 'selected' : ''}>Luce&Gas</option>
+                                </select>
+                            </div>
+                            ${state.formData.tipo === 'mobile' ? renderFormMobile() : ''}
+                            ${state.formData.tipo === 'fisso' ? renderFormFisso() : ''}
+                            ${state.formData.tipo === 'luceegas' ? renderFormLuceGas() : ''}
+                        </div>
+                        
+                        <div class="flex gap-3 mt-6">
+                            <button onclick="aggiungiVendita()" class="flex-1 bg-green-500 text-white px-6 py-3 rounded hover:bg-green-600 font-semibold text-lg">✅ Aggiungi</button>
+                            <button onclick="state.showForm = false; render();" class="bg-gray-300 px-6 py-3 rounded hover:bg-gray-400">Annulla</button>
+                        </div>
+                    </div>
+                    
+                    ${renderStatsRealTime()}
+                </div>
+            `;
+        }
+
+        function renderFormMobile() {
+            return `
+                <div><label class="block text-sm font-medium mb-1">Canone €</label><input type="number" step="0.01" value="${state.formData.canone}" onchange="state.formData.canone = this.value" class="w-full border rounded px-3 py-2"></div>
+                <div><label class="block text-sm font-medium mb-1">Tipo GA</label><select onchange="state.formData.tipoGA = this.value" class="w-full border rounded px-3 py-2"><option value="untied" ${state.formData.tipoGA === 'untied' ? 'selected' : ''}>Untied</option><option value="tied" ${state.formData.tipoGA === 'tied' ? 'selected' : ''}>Tied</option><option value="piva" ${state.formData.tipoGA === 'piva' ? 'selected' : ''}>P.IVA</option></select></div>
+                <div><label class="block text-sm font-medium mb-1">MNP</label><select onchange="state.formData.mnp = this.value === 'true'; render();" class="w-full border rounded px-3 py-2"><option value="false">No</option><option value="true" ${state.formData.mnp ? 'selected' : ''}>Sì</option></select></div>
+                ${state.formData.mnp ? `<div><label class="block text-sm font-medium mb-1">Operatore</label><select onchange="state.formData.operatoreMNP = this.value" class="w-full border rounded px-3 py-2"><option value="">Altro</option><option value="iliad">Iliad</option><option value="fastweb">Fastweb</option></select></div>` : ''}
+                <div><label class="block text-sm font-medium mb-1">Telefono</label><select onchange="state.formData.telefonoIncluso = this.value === 'true'; render();" class="w-full border rounded px-3 py-2"><option value="false">No</option><option value="true" ${state.formData.telefonoIncluso ? 'selected' : ''}>Sì</option></select></div>
+                ${state.formData.telefonoIncluso ? `<div><label class="block text-sm font-medium mb-1">Fascia</label><select onchange="state.formData.fasciaPrezzo = this.value" class="w-full border rounded px-3 py-2"><option value="<200">< 200€</option><option value="200-600" ${state.formData.fasciaPrezzo === '200-600' ? 'selected' : ''}>200-600€</option><option value=">600">> 600€</option></select></div>` : ''}
+                <div><label class="block text-sm font-medium mb-1">Convergenza</label><select onchange="state.formData.convergenza = this.value" class="w-full border rounded px-3 py-2"><option value="nessuna">Nessuna</option><option value="superfibra">Superfibra</option><option value="luceegas">Luce&Gas</option></select></div>
+                <div><label class="block text-sm font-medium mb-1">Più Sicuri</label><select onchange="state.formData.piuSicuri = this.value" class="w-full border rounded px-3 py-2"><option value="no">No</option><option value="base">Base</option><option value="pro">Pro</option></select></div>
+            `;
+        }
+
+        function renderFormFisso() {
+            return `
+                <div><label class="block text-sm font-medium mb-1">Tipo Fisso</label><select onchange="state.formData.tipoFisso = this.value" class="w-full border rounded px-3 py-2"><option value="consumer">Consumer</option><option value="voce-casa">Voce Casa</option></select></div>
+                <div class="flex items-center gap-2"><input type="checkbox" ${state.formData.lineaAttiva ? 'checked' : ''} onchange="state.formData.lineaAttiva = this.checked" class="w-4 h-4"><label class="text-sm">Linea Attiva</label></div>
+                <div class="flex items-center gap-2"><input type="checkbox" ${state.formData.convergenzaFisso ? 'checked' : ''} onchange="state.formData.convergenzaFisso = this.checked" class="w-4 h-4"><label class="text-sm">Convergenza</label></div>
+                <div class="flex items-center gap-2"><input type="checkbox" ${state.formData.ftth ? 'checked' : ''} onchange="state.formData.ftth = this.checked" class="w-4 h-4"><label class="text-sm">FTTH</label></div>
+                <div><label class="block text-sm font-medium mb-1">Netflix</label><select onchange="state.formData.netflix = this.value" class="w-full border rounded px-3 py-2"><option value="no">No</option><option value="no-adv">Senza ADV</option><option value="adv">Con ADV</option></select></div>
+                <div class="flex items-center gap-2"><input type="checkbox" ${state.formData.fritzbox ? 'checked' : ''} onchange="state.formData.fritzbox = this.checked" class="w-4 h-4"><label class="text-sm">FRITZ!Box</label></div>
+            `;
+        }
+
+        function renderFormLuceGas() {
+            return `
+                <div><label class="block text-sm font-medium mb-1">Tipo</label><select onchange="state.formData.tipoLuceGas = this.value; render();" class="w-full border rounded px-3 py-2"><option value="consumer">Consumer</option><option value="microbusiness">Microbusiness</option></select></div>
+                <div class="flex items-center gap-2"><input type="checkbox" ${state.formData.sdd ? 'checked' : ''} onchange="state.formData.sdd = this.checked; render();" class="w-4 h-4"><label class="text-sm">SDD</label></div>
+                <div class="col-span-2 bg-blue-50 p-4 rounded"><h4 class="font-semibold text-blue-900 mb-2">Compenso</h4><p class="text-sm">${state.formData.tipoLuceGas === 'consumer' ? (state.formData.sdd ? '75€ con SDD' : '60€ senza SDD') : (state.formData.sdd ? '115€ con SDD' : '100€ senza SDD')}</p></div>
+            `;
+        }
+
+        function renderStatsRealTime() {
+            const stats = calcolaStatistiche();
+            const proiezioni = calcolaProiezioni(stats);
+            return `
+                <div class="space-y-4">
+                    <div class="bg-gradient-to-br from-green-500 to-green-600 rounded-lg shadow-2xl p-8 text-white">
+                        <h3 class="text-lg font-semibold opacity-90">💰 DRMS Real-Time</h3>
+                        <div class="text-5xl font-bold my-2">€${stats.totale.fatturato.toFixed(0)}</div>
+                        ${proiezioni ? `<p class="text-sm opacity-90">📅 Proiezione: €${proiezioni.totale.fatturato.toFixed(0)}</p>` : ''}
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="bg-white rounded-lg shadow p-4 border-l-4 border-orange-500"><div class="text-sm text-gray-600">Mobile</div><div class="text-2xl font-bold text-orange-600">${stats.totale.mobileCount}</div></div>
+                        <div class="bg-white rounded-lg shadow p-4 border-l-4 border-blue-500"><div class="text-sm text-gray-600">Fisso</div><div class="text-2xl font-bold text-blue-600">${stats.totale.fissoCount}</div></div>
+                        <div class="bg-white rounded-lg shadow p-4 border-l-4 border-green-500"><div class="text-sm text-gray-600">Luce&Gas</div><div class="text-2xl font-bold text-green-600">${stats.totale.lucegasCount}</div></div>
+                        <div class="bg-white rounded-lg shadow p-4 border-l-4 border-purple-500"><div class="text-sm text-gray-600">Totale</div><div class="text-2xl font-bold text-purple-600">${stats.totale.mobileCount + stats.totale.fissoCount + stats.totale.lucegasCount}</div></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow p-4"><h4 class="font-bold mb-3">Mix</h4><div class="space-y-2 text-sm"><div class="flex justify-between"><span>Tied:</span><span class="font-semibold">${stats.percTied || '0'}%</span></div><div class="flex justify-between"><span>P.IVA:</span><span class="font-semibold">${stats.percPiva || '0'}%</span></div></div></div>
+                    ${(stats.sogliaFissoMinima < 1 || stats.totale.pivaCount < 8) ? `<div class="bg-red-50 border-l-4 border-red-500 p-4 rounded"><h4 class="font-bold text-red-800 text-sm mb-1">⚠️ Rischio</h4><ul class="text-xs text-red-700">${stats.sogliaFissoMinima < 1 ? `<li>Fisso: -${(64-stats.fissoTotalePunti).toFixed(1)}</li>` : ''}${stats.totale.pivaCount < 8 ? `<li>P.IVA: -${8-stats.totale.pivaCount}</li>` : ''}</ul></div>` : ''}
+                </div>
+            `;
+        }
+
+        function renderVendita(v, idx, stats) {
+            let comm = 0, punti = 0;
+            if (v.tipo === 'mobile') { comm = calcolaCommissioneMobile(v, stats[v.pdv].mobile.soglia); punti = calcolaPuntiSogliaMobile(v); }
+            else if (v.tipo === 'fisso') { comm = calcolaCommissioneFisso(v, stats[v.pdv].fisso.soglia); punti = calcolaPuntiSogliaFisso(v); }
+            else if (v.tipo === 'luceegas') comm = calcolaCommissioneLuceGas(v);
+            
+            return `
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded hover:bg-gray-100">
+                    <div class="flex-1 flex items-center gap-2 flex-wrap text-sm">
+                        <span class="font-bold">#${idx+1}</span>
+                        <span class="px-2 py-1 bg-orange-100 text-orange-800 text-xs rounded">${v.pdv === 'cc' ? 'CC' : 'Strada'}</span>
+                        <span class="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">${v.tipo.toUpperCase()}</span>
+                        ${v.tipo === 'mobile' ? `<span>€${v.canone}</span><span>${v.tipoGA.toUpperCase()}</span>${v.mnp ? '<span class="text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">MNP</span>' : ''}${v.telefonoIncluso ? '<span class="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">Tel</span>' : ''}` : ''}
+                        ${v.tipo === 'fisso' ? `${v.lineaAttiva ? '<span class="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">Attiva</span>' : ''}${v.ftth ? '<span class="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">FTTH</span>' : ''}` : ''}
+                        ${v.tipo === 'luceegas' ? `<span>${v.tipoLuceGas === 'consumer' ? 'Consumer' : 'Micro'}</span>${v.sdd ? '<span class="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">SDD</span>' : ''}` : ''}
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <div class="text-right">
+                            ${punti > 0 ? `<p class="text-sm text-gray-600">${punti.toFixed(2)} pt</p>` : ''}
+                            <p class="font-bold text-green-600">€${comm.toFixed(2)}</p>
+                        </div>
+                        <button onclick="rimuoviVendita(${v.id})" class="text-red-500 hover:text-red-700">🗑️</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderPDV(key, stats) {
+            const pdv = pdvConfig[key];
+            const mobWidth = Math.min(100, (stats[key].mobile.punti / (pdv.mobileSoglie[stats[key].mobile.soglia] || pdv.mobileSoglie[3])) * 100);
+            const fissoWidth = Math.min(100, (stats[key].fisso.punti / (pdv.fissoSoglie[stats[key].fisso.soglia] || pdv.fissoSoglie[3])) * 100);
+            return `
+                <div class="bg-white rounded-lg shadow-lg p-6">
+                    <h3 class="text-lg font-bold mb-4">${pdv.name}</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <div class="flex justify-between text-sm mb-1"><span>Mobile: Soglia ${stats[key].mobile.soglia}°</span><span class="font-semibold">${stats[key].mobile.punti.toFixed(1)} / ${pdv.mobileSoglie[stats[key].mobile.soglia] || pdv.mobileSoglie[3]}</span></div>
+                            <div class="w-full bg-gray-200 rounded-full h-2"><div class="bg-orange-500 h-2 rounded-full" style="width: ${mobWidth}%"></div></div>
+                            <p class="text-sm text-gray-600 mt-1">€${stats[key].mobile.fatturato.toFixed(0)}</p>
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-sm mb-1"><span>Fisso: Soglia ${stats[key].fisso.soglia}°</span><span class="font-semibold">${stats[key].fisso.punti.toFixed(1)} / ${pdv.fissoSoglie[stats[key].fisso.soglia] || pdv.fissoSoglie[3]}</span></div>
+                            <div class="w-full bg-gray-200 rounded-full h-2"><div class="bg-blue-500 h-2 rounded-full" style="width: ${fissoWidth}%"></div></div>
+                            <p class="text-sm text-gray-600 mt-1">€${stats[key].fisso.fatturato.toFixed(0)}</p>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Init
+        document.getElementById('file-upload').addEventListener('change', importaDati);
+        render();
+    </script>
+</body>
+</html>
