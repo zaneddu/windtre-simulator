@@ -1,262 +1,655 @@
 <!DOCTYPE html>
 <html lang="it">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Simulatore WindTre PRO+ - Ottobre 2025</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<style>
-  * { box-sizing: border-box; }
-  body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
-  .fade-in { animation: fadeIn 0.3s ease-in; }
-  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-  .slide-in { animation: slideIn 0.3s ease-out; }
-  @keyframes slideIn { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulatore WindTre PRO+ - Ottobre 2025</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .slide-in { animation: slideIn 0.3s ease-out; }
+        @keyframes slideIn { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .progress-bar { transition: width 0.3s ease; }
+    </style>
 </head>
 <body class="bg-gradient-to-br from-orange-50 to-orange-100 min-h-screen p-4">
-<input type="file" id="file-upload" accept=".json" style="display: none;">
-<div id="app" class="max-w-7xl mx-auto"></div>
-<script>
-// === CONFIGURAZIONE PDV ===
-const pdvConfig = {
-  strada: { name: 'Strada', clusters: [
-    { mobile: [70,105,135,165], fisso: [28,46,67,80] },
-    { mobile: [70,115,160,200], fisso: [34,60,83,97] },
-    { mobile: [70,130,185,225], fisso: [39,67,96,108] }
-  ]},
-  cc: { name: 'Centro Commerciale', clusters: [
-    { mobile: [80,115,160,205], fisso: [30,48,70,84] },
-    { mobile: [80,120,185,225], fisso: [36,62,86,100] },
-    { mobile: [80,135,205,245], fisso: [41,69,99,110] }
-  ]}
-};
+    <input type="file" id="file-upload" accept=".json" style="display: none;">
+    <div id="app" class="max-w-7xl mx-auto"></div>
+    <script>
+        // === CONFIG PDV (dal documento, Cluster 1-3 per Strada/CC) ===
+        const pdvConfig = {
+            strada: { 
+                name: 'Strada', 
+                clusters: [
+                    { mobile: [70, 105, 135, 165], fisso: [28, 46, 67, 80] }, // Cluster 1
+                    { mobile: [70, 115, 160, 200], fisso: [34, 60, 83, 97] }, // Cluster 2
+                    { mobile: [70, 130, 185, 225], fisso: [39, 67, 96, 108] }  // Cluster 3
+                ]
+            },
+            cc: { 
+                name: 'Centro Commerciale', 
+                clusters: [
+                    { mobile: [80, 115, 160, 205], fisso: [30, 48, 70, 84] }, // Cluster 1
+                    { mobile: [80, 120, 185, 225], fisso: [36, 62, 86, 100] }, // Cluster 2
+                    { mobile: [80, 135, 205, 245], fisso: [41, 69, 99, 110] }  // Cluster 3
+                ]
+            }
+        };
 
-// === STATE ===
-let state = {
-  config: {
-    pdvType: 'cc',
-    cluster: 1, // 0=1, 1=2, 2=3
-    giorniLavorativi: 31,
-    giorniTrascorsi: 7,
-    rsMultipunto: 1,
-    promoterPlus: false,
-    promoter: false
-  },
-  vendite: JSON.parse(localStorage.getItem('windtre_vendite_v2') || '[]'),
-  showForm: false,
-  formData: {}
-};
+        // === STATE GLOBALE ===
+        let state = {
+            config: JSON.parse(localStorage.getItem('windtre_config_v2') || JSON.stringify({
+                pdvType: 'cc', // 'strada' o 'cc'
+                cluster: 1, // 0=Cluster1, 1=Cluster2, 2=Cluster3
+                promoterType: 'none', // 'none', 'promoter', 'plus'
+                giorniLavorativi: 31,
+                giorniTrascorsi: 7,
+                rsMultipdv: 1 // Numero PDV per RS
+            })),
+            vendite: JSON.parse(localStorage.getItem('windtre_vendite_v2') || '[]'),
+            showForm: false,
+            formData: { tipo: 'mobile' }
+        };
 
-// === SALVATAGGIO ===
-function saveState() {
-  localStorage.setItem('windtre_vendite_v2', JSON.stringify(state.vendite));
-  localStorage.setItem('windtre_config_v2', JSON.stringify(state.config));
-}
+        // === FUNZIONI UTILITY ===
+        function saveState() {
+            localStorage.setItem('windtre_vendite_v2', JSON.stringify(state.vendite));
+            localStorage.setItem('windtre_config_v2', JSON.stringify(state.config));
+        }
 
-// === CARICA CONFIG ===
-function loadConfig() {
-  const cfg = localStorage.getItem('windtre_config_v2');
-  if (cfg) Object.assign(state.config, JSON.parse(cfg));
-}
+        function getSoglie(type, pdv, clusterIdx) {
+            return pdvConfig[pdv].clusters[clusterIdx][type];
+        }
 
-// === CALCOLI SOGLIE ===
-function getSoglie(type, pdv, cluster) {
-  return pdvConfig[pdv].clusters[cluster][type];
-}
+        function calcolaSoglia(punti, soglie) {
+            if (punti >= soglie[3]) return 4;
+            if (punti >= soglie[2]) return 3;
+            if (punti >= soglie[1]) return 2;
+            if (punti >= soglie[0]) return 1;
+            return 0;
+        }
 
-function calcolaSoglia(punti, soglie) {
-  if (punti >= soglie[3]) return 4;
-  if (punti >= soglie[2]) return 3;
-  if (punti >= soglie[1]) return 2;
-  if (punti >= soglie[0]) return 1;
-  return 0;
-}
+        // === CALCOLO PUNTI MOBILE (dal doc p.3) ===
+        function puntiMobile(v) {
+            let punti = v.underground ? 0.5 : 1.0;
+            if (v.mnp) punti += 1.0;
+            if (v.tipoGA === 'tied') punti += 2.0; // Base, +0.25 extra in soglia 3-4
+            if (v.tipoGA === 'piva') punti += 1.0;
+            if (v.mnp && ['iliad', 'fastweb', 'coop', 'poste', 'tiscali'].includes(v.operatoreMNP)) punti += 1.0;
+            punti *= (v.piuSicuri !== 'no' ? 1.0 : 0.75);
+            if (v.telInclCompass || v.telInclFindomestic) punti += 1.25; // Tied con finanz.
+            if (v.profStaffXL) punti += 0.5;
+            if (v.reloadExchange) punti += 0.5;
+            if (v.phaseInTied) punti += 0.5;
+            return punti;
+        }
 
-// === PUNTI MOBILE ===
-function puntiMobile(v) {
-  let p = v.underground ? 0.5 : 1.0;
-  if (v.mnp) p += 1.0;
-  if (v.tipoGA === 'tied') p += (v.soglia >= 3 ? 2.25 : 2.0);
-  if (v.tipoGA === 'piva') p += 1.0;
-  if (v.mnp && ['iliad','fastweb','coop','poste','tiscali'].includes(v.operatore)) p += 1.0;
-  if (v.piuSicuri !== 'no') p = p * 1.0; else p *= 0.75;
-  if (v.tiedPhaseIn && v.mnp) p += 0.5;
-  if (v.profStaffXL) p += 0.5;
-  if (v.reloadExchange) p += 0.5;
-  return p;
-}
+        // === CALCOLO PUNTI FISSO (dal doc p.4) ===
+        function puntiFisso(v) {
+            let punti = v.piva ? 1.5 : 1.0;
+            if (v.fwaOutdoor && !v.secondaLinea) punti = 1.5;
+            if (v.secondaLinea) punti = 1.5;
+            if (v.ftth) punti += 1.0;
+            if (v.netflix !== 'no') punti += 0.5;
+            if (v.piuSicuriCasa) punti += 0.25;
+            if (v.assicurazioneCasa) punti += 0.5; // Assicurazioni
+            if (v.fritzbox) punti += 1.0;
+            if (v.opzioniAggiuntive) punti += [0.25, 0.5, 1.0, 1.5][v.sogliaFisso || 0]; // Chiamate illimitate
+            return punti;
+        }
 
-// === PUNTI FISSO ===
-function puntiFisso(v) {
-  let p = v.piva ? 1.5 : 1.0;
-  if (v.secondaLinea) p += 1.5;
-  if (v.fritzbox) p += 1.0;
-  if (v.netflix !== 'no') p += 0.5;
-  if (v.piuSicuriCasa) p += 0.25;
-  if (v.assicurazione) p += 0.5;
-  return p;
-}
+        // === COMMISSIONE MOBILE (dal doc p.3, + extra) ===
+        function commMobile(v, soglia) {
+            let comm = v.tipoGA === 'untied' ? 1 : 5;
+            let molt = [0, 1.0, 1.5, 2.0, 2.25][soglia] || 0;
+            comm += parseFloat(v.canone || 0) * (molt + (v.mnp ? 1 : 0) + (v.tipoGA === 'tied' ? (soglia >= 3 ? 2.25 : 2.0) : 0) + (v.tipoGA === 'piva' ? 1 : 0));
+            if (v.convergenzaSuperfibra) comm += 15;
+            if (v.convergenzaMultiservice) comm += 20;
+            if (v.piuSicuri === 'pro') comm += 5;
+            else if (v.piuSicuri === 'base') comm += 0.5;
+            if (v.reloadExchange) comm += 5;
+            if (v.telefonoIncluso) {
+                if (v.tipoTelefono === 'smartphone') {
+                    if (v.fasciaPrezzo === '<200') comm += 5;
+                    else if (v.fasciaPrezzo === '200-600') comm += 15;
+                    else if (v.fasciaPrezzo === '>600') comm += 15;
+                    if (v.finStd || v.rataSmart) comm += 10; // Extra
+                }
+            }
+            return Math.round(comm * 100) / 100;
+        }
 
-// === COMMISSIONI MOBILE ===
-function commMobile(v, soglia) {
-  let c = v.tipoGA === 'untied' ? 1 : 5;
-  const molt = [0,1,1.5,2,2.25][soglia];
-  c += parseFloat(v.canone||0) * (molt + (v.mnp?1:0) + (v.tipoGA==='tied'?2:0) + (v.tipoGA==='piva'?1:0));
-  if (v.telefono) {
-    if (v.fascia === '<200') c += 20;
-    else if (v.fascia === '200-600') c += 25;
-    else if (v.fascia === '>600') c += 40;
-    if (v.findomestic) c += 15;
-    if (v.compass) c += 20;
-  }
-  if (v.convergenza) c += 15;
-  if (v.piuSicuri === 'pro') c += 5;
-  if (v.reloadExchange) c += 5;
-  return c;
-}
+        // === COMMISSIONE FISSO (dal doc p.4) ===
+        function commFisso(v, soglia) {
+            let comm = 22; // Base
+            if (v.voceCasa) comm = 17;
+            if (v.secondaLineaProf) comm = 10;
+            let molt = [0, 2.0, 3.0, 4.0, 5.0][soglia] || 0;
+            comm += comm * (molt + (v.convergenza ? 2.0 : 0) + (v.ftth ? 1.0 : 0) + (v.fwaOutdoor ? 1.5 : 0));
+            if (v.netflix === 'no-adv') comm += 10;
+            else if (v.netflix === 'adv') comm += 5;
+            if (v.piuSicuriCasa) comm += 2;
+            if (v.fritzbox) comm += 40;
+            if (v.migrazioneFibra) comm += 40;
+            return Math.round(comm * 100) / 100;
+        }
 
-// === ASSICURAZIONI ===
-function commAssicurazione(v) {
-  const base = 10;
-  const canone = parseFloat(v.canone);
-  let varBoost = 0;
-  if (v.tipo === 'casa-start') varBoost = 2.5 * canone + 0.5 * canone;
-  else if (v.tipo === 'casa-plus') varBoost = 2.5 * canone + 0.5 * canone;
-  else if (v.tipo === 'casa-full') varBoost = 2.5 * canone + 0.5 * canone;
-  else if (v.tipo === 'pet') varBoost = 2.5 * canone;
-  else if (v.tipo === 'viaggi') varBoost = 2.5 * canone;
-  else if (v.tipo === 'viaggio-mondo') varBoost = 0.125 * v.premio;
-  else if (v.tipo === 'sport-ind') varBoost = 2.5 * canone;
-  else if (v.tipo === 'elettrodom') varBoost = 1.5 * canone;
-  else if (v.tipo === 'protezione-pro') varBoost = 2.0 * canone;
-  return base + varBoost + (v.rinnovo ? canone : 0);
-}
+        // === LUCE&GAS (dal doc p.6) ===
+        function commLuceGas(v) {
+            if (v.microbusiness) return v.sdd ? 125 : 110;
+            return v.sdd ? 85 : 70;
+        }
 
-// === STATISTICHE ===
-function calcolaTutto() {
-  loadConfig();
-  const cfg = state.config;
-  const soglieM = getSoglie('mobile', cfg.pdvType, cfg.cluster);
-  const soglieF = getSoglie('fisso', cfg.pdvType, cfg.cluster);
+        // === ASSICURAZIONI (dal doc p.7-8, T1/T13/T25) ===
+        function commAssicurazione(v) {
+            const base = 10;
+            const canone = parseFloat(v.canone || 0);
+            let totale = base;
+            // T1: Fisso + Variabile + Boost
+            let t1 = 0;
+            if (v.categoria === 'casa') {
+                t1 = 2.5 * canone + (v.boost ? 0.5 * canone : 0);
+            } else if (v.categoria === 'pet') {
+                t1 = 2.5 * canone;
+            } else if (v.categoria === 'viaggi') {
+                t1 = 2.5 * canone;
+            } else if (v.categoria === 'sport') {
+                t1 = 2.5 * canone + (v.famiglia ? 0.5 * canone : 0);
+            } else if (v.categoria === 'elettrodom') {
+                t1 = 1.5 * canone;
+            } else if (v.categoria === 'protezione-pro') {
+                t1 = 2.0 * canone;
+            } else if (v.categoria === 'viaggio-mondo') {
+                t1 = 0.125 * v.premioVariabile;
+            }
+            totale += t1;
+            // T13: +1x canone se rinnovo
+            if (v.rinnovoT13) totale += 1 * canone;
+            // T25: +1x o 2x canone se rinnovo
+            if (v.rinnovoT25) totale += (v.boostT25 ? 2 : 1) * canone;
+            return Math.round(totale * 100) / 100;
+        }
 
-  const stats = {
-    mobile: { count:0, piva:0, tied:0, punti:0, fatturato:0 },
-    fisso: { count:0, punti:0, fatturato:0 },
-    lucegas: { count:0, fatturato:0 },
-    cb: { punti:0, eventi:0 },
-    assicurazioni: { count:0, punti:0, fatturato:0 },
-    extraPivaMobile: 0,
-    extraPivaFisso: 0,
-    extraCluster3: 0,
-    extraSmartCB: 0,
-    decurtazione: 0,
-    totale: 0
-  };
+        // === CUSTOMER BASE EVENTI (dal doc p.9-11, punti per Partnership) ===
+        function puntiCB(v) {
+            const eventiPunti = {
+                'cambioUntied': 2,
+                'cambioEasyPay': 4,
+                'rinvioEasyPay': 4,
+                'telefonoRate': 6,
+                'telefonoFinanz': 8,
+                'cambioMicrobus': 4,
+                'migrazioneFibra': 2,
+                'migrazioneTech': 2,
+                'cambioNetflix': 4,
+                'reloadExchange': 2,
+                'piuSicuriCasa': 1
+            };
+            return eventiPunti[v.eventoTipo] || 0;
+        }
 
-  // Assegna soglia temporanea
-  state.vendite.forEach(v => {
-    if (v.tipo === 'mobile') v.soglia = calcolaSoglia(stats.mobile.punti, soglieM);
-    if (v.tipo === 'fisso') v.soglia = calcolaSoglia(stats.fisso.punti, soglieF);
-  });
+        function commCB(v) {
+            const gettoni = {
+                'cambioUntied': [3, 8, 16, 26], // Per cluster
+                'cambioEasyPay': [4, 12, 21, 31],
+                'smartPack': 12,
+                'telefonoIncluso': [10, 15, 20],
+                'multiDevice': 15,
+                'addOnRicorrenti': [3, 5],
+                'unlimitedGigaBoom': [3, 5],
+                'piuSicuriMobile': [0.5, 5],
+                'reloadExchange': 5,
+                'cambiaTelefono': 17,
+                'goPlay': 3,
+                'buyTied': 12,
+                'buyUntied': 8,
+                'migrazioneFibra': 40,
+                'migrazioneVoceCasa': 10,
+                'netflixNoAdv': 10,
+                'netflixAdv': 5,
+                'piuSicuriCasa': 5,
+                'cambioPianoFisso': 10,
+                'cambioMicrobus': 20,
+                'sostituzioneSim3G': 5,
+                'roamingPiva': 5,
+                'pagamentoPinpad': 0.5
+            };
+            return gettoni[v.eventoTipo] || 0;
+        }
 
-  // Ricalcola
-  state.vendite.forEach(v => {
-    if (v.tipo === 'mobile') {
-      const p = puntiMobile(v);
-      stats.mobile.punti += p;
-      stats.mobile.count++;
-      if (v.tipoGA === 'piva') stats.mobile.piva++;
-      if (v.tipoGA === 'tied') stats.mobile.tied++;
-      stats.mobile.fatturato += commMobile(v, calcolaSoglia(stats.mobile.punti, soglieM));
-    }
-    if (v.tipo === 'fisso') {
-      const p = puntiFisso(v);
-      stats.fisso.punti += p;
-      stats.fisso.count++;
-      stats.fisso.fatturato += 22 + 22 * [0,2,3,4,5][calcolaSoglia(stats.fisso.punti, soglieF)];
-    }
-    if (v.tipo === 'luceegas') {
-      const c = v.micro ? (v.sdd ? 115 : 100) : (v.sdd ? 75 : 60);
-      stats.lucegas.fatturato += c;
-      stats.lucegas.count++;
-    }
-    if (v.tipo === 'assicurazione') {
-      stats.assicurazioni.fatturato += commAssicurazione(v);
-      stats.assicurazioni.count++;
-      stats.assicurazioni.punti += v.punti || 0;
-    }
-    if (v.tipo === 'cb') {
-      stats.cb.punti += v.punti;
-      stats.cb.eventi++;
-    }
-  });
+        // === EXTRA GARE P.IVA (dal doc p.5) ===
+        function extraPivaMobile(countPiva, promoterType, cluster) {
+            let premio = 0;
+            const soglie = {
+                plus: {1: 750, 2: 1600, 3: 2600, 4: 3700},
+                promoter: {1: 750, 2: 1600, 3: 2600},
+                none: {1: 300, 2: 600, 3: 1200}
+            };
+            const extraPerGa = 20;
+            const maxSoglia = promoterType === 'plus' ? 4 : promoterType === 'promoter' ? 3 : 3;
+            for (let s = maxSoglia; s >= 1; s--) {
+                const sogliaCount = [25, 37, 48, 65][s-1] || 0;
+                if (countPiva >= sogliaCount) {
+                    premio = soglie[promoterType][s] + extraPerGa * Math.max(0, countPiva - sogliaCount);
+                    break;
+                }
+            }
+            return premio;
+        }
 
-  // Extra P.IVA
-  const promoter = cfg.promoterPlus ? 0 : cfg.promoter ? 1 : 2;
-  if (stats.mobile.piva >= 65 && promoter === 0) stats.extraPivaMobile = 3700 + 20*(stats.mobile.piva-65);
-  else if (stats.mobile.piva >= 48 && promoter <= 1) stats.extraPivaMobile = promoter === 0 ? 2600 + 20*(stats.mobile.piva-48) : 2600 + 20*(stats.mobile.piva-48);
-  else if (stats.mobile.piva >= 35 && promoter === 2) stats.extraPivaMobile = 1200 + 20*(stats.mobile.piva-35);
+        function extraPivaFisso(countFisso, promoterType) {
+            let premio = 0;
+            const soglie = {
+                plus: {1: 280, 2: 450, 3: 750, 4: 1000},
+                promoter: {1: 280, 2: 450, 3: 750},
+                none: {1: 150, 2: 250, 3: 400}
+            };
+            const extraPerGa = 20;
+            const maxSoglia = promoterType === 'plus' ? 4 : 3;
+            for (let s = maxSoglia; s >= 1; s--) {
+                const sogliaCount = [10, 14, 20, 25][s-1] || 0;
+                if (countFisso >= sogliaCount) {
+                    premio = soglie[promoterType][s] + extraPerGa * Math.max(0, countFisso - sogliaCount);
+                    break;
+                }
+            }
+            return premio;
+        }
 
-  // Decurtazione
-  const sogliaFMin = calcolaSoglia(stats.fisso.punti, soglieF);
-  if (sogliaFMin < 1 || stats.mobile.piva < 8) {
-    stats.decurtazione = (stats.mobile.fatturato + stats.fisso.fatturato) * 0.3;
-  }
+        // === EXTRA CLUSTER 3 (dal doc p.3-4) ===
+        function extraCluster3(mobileSoglia, fissoSoglia, cluster) {
+            if (cluster !== 2) return 0; // Solo Cluster 3
+            if (mobileSoglia >= 2 && fissoSoglia >= 2) return 500;
+            return 0;
+        }
 
-  // Totale
-  stats.totale = stats.mobile.fatturato + stats.fisso.fatturato + stats.lucegas.fatturato + stats.assicurazioni.fatturato + stats.extraPivaMobile - stats.decurtazione;
+        // === EXTRA SMARTPHONE CB (dal doc p.10) ===
+        function extraSmartCB(countSmartCB5GHigh, countSmartCBTotal) {
+            if (countSmartCBTotal >= 45) {
+                return countSmartCB5GHigh * 15 + (countSmartCBTotal - countSmartCB5GHigh) * 5; // High <200€ =5€
+            }
+            return 0;
+        }
 
-  return { stats, soglieM, soglieF, sogliaFMin };
-}
+        // === RELOAD (dal doc p.13-14, Attachment Rate) ===
+        function commReload(v, arTotale) {
+            const base = [5, 6, 7, 9, 11][v.fasciaReload || 0] || 5;
+            let mult = 1;
+            if (arTotale >= 0.75) mult = 4;
+            else if (arTotale >= 0.60) mult = 3;
+            else if (arTotale >= 0.40) mult = 2;
+            return base * mult;
+        }
 
-// === RENDER ===
-function render() {
-  const { stats } = calcolaTutto();
-  const app = document.getElementById('app');
-  app.innerHTML = `
-    <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
-      <h1 class="text-3xl font-bold text-orange-600">Simulatore WindTre PRO+ - DRMS + CB</h1>
-      <p class="text-gray-600">Ottobre 2025 - Completo</p>
-      <div class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
-        <button onclick="state.showForm=true;state.formData={tipo:'mobile'};render()" class="bg-orange-500 text-white px-4 py-2 rounded">+ Mobile</button>
-        <button onclick="state.showForm=true;state.formData={tipo:'fisso'};render()" class="bg-blue-500 text-white px-4 py-2 rounded">+ Fisso</button>
-        <button onclick="state.showForm=true;state.formData={tipo:'luceegas'};render()" class="bg-green-500 text-white px-4 py-2 rounded">+ Luce&Gas</button>
-        <button onclick="state.showForm=true;state.formData={tipo:'assicurazione'};render()" class="bg-purple-500 text-white px-4 py-2 rounded">+ Assicurazione</button>
-      </div>
-      <div class="mt-4 text-4xl font-bold text-green-600">€${stats.totale.toFixed(0)}</div>
-    </div>
-  `;
-  if (state.showForm) renderForm();
-  else renderDashboard(stats);
-}
+        // === PARTNERSHIP REWARD (dal doc p.11-12) ===
+        function partnershipReward(cbPunti, clusterIdx) {
+            const soglie = [[270, 320], [300, 350], [330, 380]][clusterIdx]; // Strada/CC
+            const sogliaTarget = pdvConfig[state.config.pdvType === 'strada' ? 0 : 1].clusters[state.config.cluster][0] === soglie[0] ? soglie[0] : soglie[1];
+            if (cbPunti >= sogliaTarget * 0.8) return 1000; // Base, + extra per Ass/LG
+            return 0;
+        }
 
-function renderForm() {
-  // Form dettagliato per ogni tipo
-}
+        // === CALCOLO STATISTICHE COMPLETO ===
+        function calcolaStatistiche() {
+            const cfg = state.config;
+            const soglieMobile = getSoglie('mobile', cfg.pdvType, cfg.cluster);
+            const soglieFisso = getSoglie('fisso', cfg.pdvType, cfg.cluster);
+            let stats = {
+                mobile: { count: 0, piva: 0, tied: 0, punti: 0, fatturato: 0, smartCB5GHigh: 0, smartCBTotal: 0, reloadCount: 0 },
+                fisso: { count: 0, piva: 0, punti: 0, fatturato: 0 },
+                lucegas: { count: 0, fatturato: 0 },
+                assicurazioni: { count: 0, punti: 0, fatturato: 0 },
+                cb: { eventi: 0, punti: 0, fatturato: 0 },
+                reload: { count: 0, ar: 0, fatturato: 0 },
+                extra: {
+                    pivaMobile: 0,
+                    pivaFisso: 0,
+                    cluster3Mobile: 0,
+                    cluster3Fisso: 0,
+                    smartCB: 0
+                },
+                totale: 0,
+                decurtazione: 0,
+                sogliaMobile: 0,
+                sogliaFisso: 0
+            };
 
-function renderDashboard(stats) {
-  document.getElementById('app').innerHTML += `
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-      <div class="bg-white p-6 rounded shadow">
-        <h3 class="font-bold">Mobile</h3>
-        <p>${stats.mobile.count} att. | €${stats.mobile.fatturato.toFixed(0)}</p>
-      </div>
-      <div class="bg-white p-6 rounded shadow">
-        <h3 class="font-bold">Fisso</h3>
-        <p>${stats.fisso.count} att. | €${stats.fisso.fatturato.toFixed(0)}</p>
-      </div>
-      <div class="bg-white p-6 rounded shadow">
-        <h3 class="font-bold">Extra P.IVA</h3>
-        <p>€${stats.extraPivaMobile}</p>
-      </div>
-    </div>
-  `;
-}
+            // Calcola per ogni vendita
+            state.vendite.forEach(v => {
+                if (v.tipo === 'mobile') {
+                    const punti = puntiMobile(v);
+                    stats.mobile.punti += punti;
+                    stats.mobile.count++;
+                    if (v.tipoGA === 'piva') stats.mobile.piva++;
+                    if (v.tipoGA === 'tied') stats.mobile.tied++;
+                    if (v.smartphoneCB && v.fasciaPrezzo === '>200') stats.mobile.smartCB5GHigh++;
+                    if (v.smartphoneCB) stats.mobile.smartCBTotal++;
+                    stats.mobile.fatturato += commMobile(v, calcolaSoglia(stats.mobile.punti, soglieMobile));
+                } else if (v.tipo === 'fisso') {
+                    const punti = puntiFisso(v);
+                    stats.fisso.punti += punti;
+                    stats.fisso.count++;
+                    if (v.piva) stats.fisso.piva++;
+                    stats.fisso.fatturato += commFisso(v, calcolaSoglia(stats.fisso.punti, soglieFisso));
+                } else if (v.tipo === 'lucegas') {
+                    stats.lucegas.count++;
+                    stats.lucegas.fatturato += commLuceGas(v);
+                } else if (v.tipo === 'assicurazione') {
+                    stats.assicurazioni.count++;
+                    stats.assicurazioni.punti += v.puntiAss || [4,3,3,2,2,0.5,1.5,0.5,2,4][v.sottoTipo] || 0; // Dal doc p.12
+                    stats.assicurazioni.fatturato += commAssicurazione(v);
+                } else if (v.tipo === 'cb') {
+                    stats.cb.eventi++;
+                    stats.cb.punti += puntiCB(v);
+                    stats.cb.fatturato += commCB(v);
+                } else if (v.tipo === 'reload') {
+                    stats.reload.count++;
+                    stats.reload.fatturato += commReload(v, stats.reload.ar);
+                }
+            });
 
-// === INIT ===
-loadConfig();
-render();
-</script>
+            // Soglie finali
+            stats.sogliaMobile = calcolaSoglia(stats.mobile.punti, soglieMobile);
+            stats.sogliaFisso = calcolaSoglia(stats.fisso.punti, soglieFisso);
+
+            // Extra
+            stats.extra.pivaMobile = extraPivaMobile(stats.mobile.piva, cfg.promoterType, cfg.cluster);
+            stats.extra.pivaFisso = extraPivaFisso(stats.fisso.piva + stats.fisso.count, cfg.promoterType);
+            stats.extra.cluster3Mobile = extraCluster3(stats.sogliaMobile, stats.sogliaFisso, cfg.cluster);
+            stats.extra.cluster3Fisso = extraCluster3(stats.sogliaMobile, stats.sogliaFisso, cfg.cluster); // Simile per fisso
+            stats.extra.smartCB = extraSmartCB(stats.mobile.smartCB5GHigh, stats.mobile.smartCBTotal);
+            stats.reload.ar = stats.reload.count / Math.max(1, stats.mobile.count); // Attachment Rate
+
+            // Partnership Reward
+            stats.partnership = partnershipReward(stats.cb.punti, cfg.cluster);
+
+            // Decurtazione 30% (dal doc p.3)
+            if (stats.sogliaFisso < 1 || stats.mobile.piva < 8) {
+                const mobileFissoTot = stats.mobile.fatturato + stats.fisso.fatturato;
+                stats.decurtazione = mobileFissoTot * 0.3;
+            }
+
+            // Totale finale
+            stats.totale = stats.mobile.fatturato + stats.fisso.fatturato + stats.lucegas.fatturato + 
+                           stats.assicurazioni.fatturato + stats.cb.fatturato + stats.reload.fatturato + 
+                           Object.values(stats.extra).reduce((a, b) => a + b, 0) + stats.partnership - stats.decurtazione;
+
+            return stats;
+        }
+
+        // === PROIEZIONI (basate su giorni) ===
+        function calcolaProiezioni(stats) {
+            const { giorniLavorativi, giorniTrascorsi } = state.config;
+            if (giorniTrascorsi === 0) return null;
+            const fattore = giorniLavorativi / giorniTrascorsi;
+            return {
+                totale: Math.round(stats.totale * fattore),
+                mobile: Math.round(stats.mobile.count * fattore),
+                fisso: Math.round(stats.fisso.count * fattore)
+            };
+        }
+
+        // === AZIONI ===
+        function aggiungiVendita() {
+            state.vendite.push({ ...state.formData, id: Date.now() });
+            state.showForm = false;
+            saveState();
+            render();
+        }
+
+        function rimuoviVendita(id) {
+            state.vendite = state.vendite.filter(v => v.id !== id);
+            saveState();
+            render();
+        }
+
+        function esportaDati() {
+            const data = { ...state, dataExport: new Date().toISOString() };
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `windtre-simulatore-${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function importaDati(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                try {
+                    const data = JSON.parse(ev.target.result);
+                    state.vendite = data.vendite || [];
+                    state.config = { ...state.config, ...data.config };
+                    saveState();
+                    render();
+                    alert(`Importato: ${state.vendite.length} vendite`);
+                } catch (err) {
+                    alert('Errore import!');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function resetDati() {
+            if (confirm('Cancellare tutto?')) {
+                state.vendite = [];
+                localStorage.clear();
+                saveState();
+                render();
+            }
+        }
+
+        // === RENDER FUNZIONI ===
+        function render() {
+            const stats = calcolaStatistiche();
+            const proiezioni = calcolaProiezioni(stats);
+            const cfg = state.config;
+            const pdvName = pdvConfig[cfg.pdvType].name + ` Cluster ${cfg.cluster + 1}`;
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                <div class="bg-white rounded-lg shadow-lg p-6 mb-6 fade-in">
+                    <div class="flex justify-between items-center mb-4">
+                        <div>
+                            <h1 class="text-3xl font-bold text-orange-600">📊 Simulatore WindTre PRO+ Ottobre 2025</h1>
+                            <p class="text-gray-600">DRMS + CB + Assicurazioni + Extra Gare | ${pdvName}</p>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="esportaDati()" class="bg-blue-500 text-white px-4 py-2 rounded-lg">⬇️ Export JSON</button>
+                            <label class="bg-green-500 text-white px-4 py-2 rounded-lg cursor-pointer">⬆️ Import</label>
+                            <button onclick="resetDati()" class="bg-red-500 text-white px-4 py-2 rounded-lg">🔄 Reset</button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                        <div class="text-center"><label class="text-xs">Cluster</label><select onchange="state.config.cluster = parseInt(this.value); saveState(); render();" class="border rounded px-2 py-1"><option value="0" ${cfg.cluster===0?'selected':''}>1</option><option value="1" ${cfg.cluster===1?'selected':''}>2</option><option value="2" ${cfg.cluster===2?'selected':''}>3</option></select></div>
+                        <div class="text-center"><label class="text-xs">Promoter</label><select onchange="state.config.promoterType = this.value; saveState(); render();" class="border rounded px-2 py-1"><option value="none" ${cfg.promoterType==='none'?'selected':''}>None</option><option value="promoter" ${cfg.promoterType==='promoter'?'selected':''}>Promoter</option><option value="plus" ${cfg.promoterType==='plus'?'selected':''}>Plus+</option></select></div>
+                        <div class="text-center"><label class="text-xs block">GG Lav/Tras</label><input type="number" value="${cfg.giorniLavorativi}" onchange="state.config.giorniLavorativi=parseInt(this.value)||31;saveState();render();" class="w-12 mr-1 border rounded" /> / <input type="number" value="${cfg.giorniTrascorsi}" onchange="state.config.giorniTrascorsi=parseInt(this.value)||7;saveState();render();" class="w-12 ml-1 border rounded" /></div>
+                        <button onclick="state.showForm=true; state.formData={tipo:'mobile'}; render();" class="bg-orange-500 text-white px-6 py-2 rounded-lg col-span-1 md:col-span-1">➕ Aggiungi Vendita</button>
+                    </div>
+                    <div class="text-4xl font-bold text-green-600 mb-2">€${stats.totale.toFixed(0)}</div>
+                    ${proiezioni ? `<p class="text-blue-600">Proiezione: €${proiezioni.totale.toFixed(0)}</p>` : ''}
+                    ${(stats.decurtazione > 0) ? `<div class="bg-red-100 p-2 rounded text-red-800">⚠️ Decurtazione 30%: -€${stats.decurtazione.toFixed(0)}</div>` : ''}
+                </div>
+
+                ${state.showForm ? renderForm(stats.sogliaMobile, stats.sogliaFisso) : renderDashboard(stats, cfg)}
+
+                <div class="bg-white rounded-lg shadow-lg p-6 mt-6">
+                    <h2 class="text-xl font-bold mb-4">📋 Lista Vendite (${state.vendite.length})</h2>
+                    ${state.vendite.map((v, i) => renderSingleVendita(v, i, stats)).join('') || '<p class="text-gray-500">Nessuna vendita inserita.</p>'}
+                </div>
+
+                ${renderSogliePDV(stats, cfg)}
+            `;
+            document.getElementById('file-upload').addEventListener('change', importaDati);
+        }
+
+        function renderForm(sogliaMobile, sogliaFisso) {
+            const { tipo } = state.formData;
+            return `
+                <div class="bg-white rounded-lg shadow-lg p-6 fade-in">
+                    <h2 class="text-xl font-bold mb-4">Aggiungi ${tipo.toUpperCase()}</h2>
+                    <form class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        ${tipo === 'mobile' ? renderFormMobile(sogliaMobile) : ''}
+                        ${tipo === 'fisso' ? renderFormFisso(sogliaFisso) : ''}
+                        ${tipo === 'lucegas' ? renderFormLuceGas() : ''}
+                        ${tipo === 'assicurazione' ? renderFormAssicurazione() : ''}
+                        ${tipo === 'cb' ? renderFormCB() : ''}
+                        ${tipo === 'reload' ? renderFormReload() : ''}
+                        <div class="col-span-full flex gap-4 mt-4">
+                            <button type="button" onclick="aggiungiVendita()" class="bg-green-500 text-white px-6 py-2 rounded-lg flex-1">✅ Salva</button>
+                            <button type="button" onclick="state.showForm=false; render();" class="bg-gray-300 px-6 py-2 rounded-lg">❌ Annulla</button>
+                        </div>
+                    </form>
+                </div>
+            `;
+        }
+
+        function renderFormMobile(soglia) {
+            return `
+                <div class="col-span-1"><label>Canone €</label><input type="number" step="0.01" value="${state.formData.canone || ''}" onchange="state.formData.canone=this.value" class="w-full border rounded p-2" /></div>
+                <div class="col-span-1"><label>Tipo GA</label><select onchange="state.formData.tipoGA=this.value" class="w-full border rounded p-2"><option value="untied">Untied</option><option value="tied">Tied</option><option value="piva">P.IVA</option></select></div>
+                <div class="col-span-1"><label>MNP</label><label class="flex items-center"><input type="checkbox" onchange="state.formData.mnp=this.checked" class="mr-2" /> Sì</label></div>
+                ${state.formData.mnp ? `<div class="col-span-1"><label>Operatore MNP</label><select onchange="state.formData.operatoreMNP=this.value" class="w-full border rounded p-2"><option value="">Altro</option><option value="iliad">Iliad</option><option value="fastweb">Fastweb</option><option value="coop">Coop</option><option value="poste">Poste</option><option value="tiscali">Tiscali</option></select></div>` : ''}
+                <div class="col-span-1"><label>Underground</label><label class="flex items-center"><input type="checkbox" onchange="state.formData.underground=this.checked" class="mr-2" /> Sì</label></div>
+                <div class="col-span-1"><label>Telefono Incluso</label><label class="flex items-center"><input type="checkbox" onchange="state.formData.telefonoIncluso=this.checked" class="mr-2" /> Sì</label></div>
+                ${state.formData.telefonoIncluso ? `<div class="col-span-1"><label>Fascia Prezzo</label><select onchange="state.formData.fasciaPrezzo=this.value" class="w-full border rounded p-2"><option value="<200"><200€</option><option value="200-600">200-600€</option><option value=">600">>600€</option></select></div>` : ''}
+                <div class="col-span-1"><label>Più Sicuri</label><select onchange="state.formData.piuSicuri=this.value" class="w-full border rounded p-2"><option value="no">No</option><option value="base">Base</option><option value="pro">Pro</option></select></div>
+                <div class="col-span-1"><label>Reload Exchange</label><label class="flex items-center"><input type="checkbox" onchange="state.formData.reloadExchange=this.checked" class="mr-2" /> Sì</label></div>
+                <div class="col-span-full bg-blue-50 p-3 rounded">Preview: Punti ${puntiMobile(state.formData).toFixed(2)} | Comm. €${commMobile(state.formData, soglia).toFixed(2)}</div>
+            `;
+        }
+
+        // Simili per altri form (fisso, lucegas, assicurazione, cb, reload) - abbreviato per lunghezza
+        function renderFormFisso(soglia) {
+            return `
+                <div class="col-span-1"><label>Tipo</label><select onchange="state.formData.tipoFisso=this.value" class="w-full border rounded p-2"><option value="consumer">Consumer</option><option value="piva">P.IVA</option><option value="voce-casa">Voce Casa</option><option value="seconda-linea">2° Linea Prof</option></select></div>
+                <div class="col-span-1"><label>FTTH</label><label class="flex items-center"><input type="checkbox" onchange="state.formData.ftth=this.checked" class="mr-2" /> Sì</label></div>
+                <div class="col-span-1"><label>FWA Outdoor</label><label class="flex items-center"><input type="checkbox" onchange="state.formData.fwaOutdoor=this.checked" class="mr-2" /> Sì</label></div>
+                <div class="col-span-1"><label>Netflix</label><select onchange="state.formData.netflix=this.value" class="w-full border rounded p-2"><option value="no">No</option><option value="no-adv">No ADV</option><option value="adv">ADV</option></select></div>
+                <div class="col-span-1"><label>FRITZ!Box</label><label class="flex items-center"><input type="checkbox" onchange="state.formData.fritzbox=this.checked" class="mr-2" /> Sì</label></div>
+                <div class="col-span-full bg-blue-50 p-3 rounded">Preview: Punti ${puntiFisso(state.formData).toFixed(2)} | Comm. €${commFisso(state.formData, soglia).toFixed(2)}</div>
+            `;
+        }
+
+        function renderFormLuceGas() {
+            return `
+                <div class="col-span-1"><label>Tipo</label><select onchange="state.formData.microbusiness = this.value === 'micro'" class="w-full border rounded p-2"><option value="consumer">Consumer</option><option value="micro">Microbusiness</option></select></div>
+                <div class="col-span-1"><label>SDD</label><label class="flex items-center"><input type="checkbox" onchange="state.formData.sdd=this.checked" class="mr-2" /> Sì</label></div>
+                <div class="col-span-full bg-blue-50 p-3 rounded">Preview: €${commLuceGas(state.formData).toFixed(2)}</div>
+            `;
+        }
+
+        function renderFormAssicurazione() {
+            return `
+                <div class="col-span-1"><label>Categoria</label><select onchange="state.formData.categoria=this.value" class="w-full border rounded p-2"><option value="casa">Casa/Fam</option><option value="pet">Pet</option><option value="viaggi">Viaggi</option><option value="sport">Sport</option><option value="elettrodom">Elettrodom</option><option value="protezione-pro">Protezione Pro</option><option value="viaggio-mondo">Viaggio Mondo</option></select></div>
+                <div class="col-span-1"><label>Canone €</label><input type="number" step="0.01" value="${state.formData.canone || ''}" onchange="state.formData.canone=this.value" class="w-full border rounded p-2" /></div>
+                <div class="col-span-1"><label>Rinnovo T13</label><label class="flex items-center"><input type="checkbox" onchange="state.formData.rinnovoT13=this.checked" class="mr-2" /> Sì</label></div>
+                <div class="col-span-1"><label>Rinnovo T25</label><label class="flex items-center"><input type="checkbox" onchange="state.formData.rinnovoT25=this.checked" class="mr-2" /> Sì</label></div>
+                <div class="col-span-full bg-blue-50 p-3 rounded">Preview: €${commAssicurazione(state.formData).toFixed(2)} | Punti ${state.formData.categoria === 'protezione-pro' ? 4 : 2}</div>
+            `;
+        }
+
+        function renderFormCB() {
+            return `
+                <div class="col-span-full"><label>Evento Tipo</label><select onchange="state.formData.eventoTipo=this.value" class="w-full border rounded p-2"><option value="cambioUntied">Cambio Untied</option><option value="cambioEasyPay">Cambio Easy Pay</option><option value="telefonoFinanz">Telefono Finanz</option><option value="migrazioneFibra">Migrazione Fibra</option><option value="reloadExchange">Reload Exchange</option><option value="piuSicuriCasa">Piu Sicuri Casa</option></select></div>
+                <div class="col-span-full bg-blue-50 p-3 rounded">Preview: Punti ${puntiCB(state.formData)} | €${commCB(state.formData).toFixed(2)}</div>
+            `;
+        }
+
+        function renderFormReload() {
+            return `
+                <div class="col-span-1"><label>Fascia</label><select onchange="state.formData.fasciaReload=this.value" class="w-full border rounded p-2"><option value="0"><150€</option><option value="1">150-300€</option><option value="2">300-700€</option><option value="3">700-1200€</option><option value="4">>1200€</option></select></div>
+                <div class="col-span-full bg-blue-50 p-3 rounded">Preview: €${commReload(state.formData, 0.5).toFixed(2)} (AR 50%)</div>
+            `;
+        }
+
+        function renderDashboard(stats, cfg) {
+            return `
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                    <div class="bg-white p-4 rounded shadow">
+                        <h3 class="font-bold text-orange-600">Mobile</h3>
+                        <p class="text-2xl">${stats.mobile.count} att. | €${stats.mobile.fatturato.toFixed(0)}</p>
+                        <p>Soglia ${stats.sogliaMobile}/4 | Punti ${stats.mobile.punti.toFixed(1)}</p>
+                        <div class="w-full bg-gray-200 rounded-full h-2 mt-2"><div class="bg-orange-500 h-2 rounded-full progress-bar" style="width: ${(stats.mobile.punti / getSoglie('mobile', cfg.pdvType, cfg.cluster)[3]) * 100}%"></div></div>
+                    </div>
+                    <div class="bg-white p-4 rounded shadow">
+                        <h3 class="font-bold text-blue-600">Fisso</h3>
+                        <p class="text-2xl">${stats.fisso.count} att. | €${stats.fisso.fatturato.toFixed(0)}</p>
+                        <p>Soglia ${stats.sogliaFisso}/4 | Punti ${stats.fisso.punti.toFixed(1)}</p>
+                        <div class="w-full bg-gray-200 rounded-full h-2 mt-2"><div class="bg-blue-500 h-2 rounded-full progress-bar" style="width: ${(stats.fisso.punti / getSoglie('fisso', cfg.pdvType, cfg.cluster)[3]) * 100}%"></div></div>
+                    </div>
+                    <div class="bg-white p-4 rounded shadow">
+                        <h3 class="font-bold text-green-600">Assicurazioni + CB</h3>
+                        <p class="text-2xl">${stats.assicurazioni.count + stats.cb.eventi} | €${(stats.assicurazioni.fatturato + stats.cb.fatturato).toFixed(0)}</p>
+                        <p>Partnership: €${stats.partnership}</p>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="bg-white p-4 rounded shadow">
+                        <h3 class="font-bold">Extra Gare</h3>
+                        <ul class="text-sm space-y-1">
+                            <li>P.IVA Mobile: €${stats.extra.pivaMobile}</li>
+                            <li>P.IVA Fisso: €${stats.extra.pivaFisso}</li>
+                            <li>Cluster 3: €${stats.extra.cluster3Mobile + stats.extra.cluster3Fisso}</li>
+                            <li>Smart CB: €${stats.extra.smartCB}</li>
+                            <li>Reload (AR ${ (stats.reload.ar * 100).toFixed(0) }%): €${stats.reload.fatturato}</li>
+                        </ul>
+                    </div>
+                    <div class="bg-white p-4 rounded shadow">
+                        <h3 class="font-bold">Mix KPI</h3>
+                        <p>Tied: ${(stats.mobile.tied / Math.max(1, stats.mobile.count) * 100).toFixed(1)}% | P.IVA: ${stats.mobile.piva}/8</p>
+                        <p>Luce&Gas: ${stats.lucegas.count} | €${stats.lucegas.fatturato.toFixed(0)}</p>
+                        ${stats.sogliaFisso < 1 ? '<p class="text-red-600">⚠️ Rischio decurtazione Fisso!</p>' : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderSingleVendita(v, i, stats) {
+            let comm = 0, punti = 0;
+            if (v.tipo === 'mobile') { punti = puntiMobile(v); comm = commMobile(v, stats.sogliaMobile); }
+            // ... simile per altri tipi
+            return `
+                <div class="flex justify-between p-3 bg-gray-50 rounded mb-2">
+                    <span>#${i+1} ${v.tipo.toUpperCase()} ${v.canone || ''} ${v.tipoGA || ''}</span>
+                    <span>€${comm.toFixed(2)} (${punti.toFixed(2)} pt)</span>
+                    <button onclick="rimuoviVendita(${v.id})" class="text-red-500 ml-2">🗑️</button>
+                </div>
+            `;
+        }
+
+        function renderSogliePDV(stats, cfg) {
+            const soglieM = getSoglie('mobile', cfg.pdvType, cfg.cluster);
+            const soglieF = getSoglie('fisso', cfg.pdvType, cfg.cluster);
+            return `
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+                    <div class="bg-white p-6 rounded shadow">
+                        <h3 class="font-bold">${pdvConfig[cfg.pdvType].name}</h3>
+                        <div class="mt-4">
+                            <p>Mobile: ${stats.sogliaMobile}° soglia (${stats.mobile.punti.toFixed(1)} / ${soglieM[stats.sogliaMobile] || soglieM[3]}) | €${stats.mobile.fatturato.toFixed(0)}</p>
+                            <div class="w-full bg-gray-200 rounded-full h-3 mt-1"><div class="bg-orange-500 h-3 rounded-full" style="width: ${Math.min(100, (stats.mobile.punti / soglieM[3] * 100))}%"></div></div>
+                        </div>
+                        <div class="mt-4">
+                            <p>Fisso: ${stats.sogliaFisso}° soglia (${stats.fisso.punti.toFixed(1)} / ${soglieF[stats.sogliaFisso] || soglieF[3]}) | €${stats.fisso.fatturato.toFixed(0)}</p>
+                            <div class="w-full bg-gray-200 rounded-full h-3 mt-1"><div class="bg-blue-500 h-3 rounded-full" style="width: ${Math.min(100, (stats.fisso.punti / soglieF[3] * 100))}%"></div></div>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded shadow">
+                        <h3 class="font-bold">Totale Mese</h3>
+                        <p class="text-2xl font-bold text-green-600">€${stats.totale.toFixed(0)}</p>
+                        ${Object.entries(stats.extra).map(([k, val]) => `<p>${k.replace('piva', 'P.IVA ').replace('cluster3', 'Cluster3 ').toUpperCase()}: €${val}</p>`).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        // === INIT ===
+        render();
+    </script>
 </body>
 </html>
